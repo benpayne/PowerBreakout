@@ -1,5 +1,6 @@
 
 #include <SoftwareSerial.h>
+#include <EEPROM.h>
 
 // Digital Pins
 #define DIP_SW_1_PIN 2
@@ -7,8 +8,8 @@
 #define DIP_SW_3_PIN 4
 #define DIP_SW_4_PIN 5
 #define BUTTON_PIN   8
-#define PWR_PIN      6
-#define RELAY_PIN    7
+#define PWR_PIN      7
+#define RELAY_PIN    6
 #define LED1_PIN     12
 #define LED2_PIN     13
 
@@ -31,6 +32,9 @@ int led_state = 0;
 unsigned long led_timer = 0;
 int id = 0;
 float voltage = 0;
+bool power_state = false;
+
+#define POWER_STATE_ADDR 0
 
 void setup() {
   Serial.begin(56700);
@@ -47,10 +51,13 @@ void setup() {
   pinMode(RS485_EN_PIN, OUTPUT);
   digitalWrite(RS485_EN_PIN, RS485Receive);
   RS485Serial.begin(9600);
-  RS485Serial.listen();
+  //RS485Serial.listen();
   
   led_timer = millis();
   digitalWrite(LED1_PIN, LOW);  
+  digitalWrite(RELAY_PIN, LOW);
+
+  Serial.println("Firmware Version: 1.0");
   
   id = 0;
   id = id | (digitalRead(DIP_SW_1_PIN) == HIGH ? 1 : 0);
@@ -59,9 +66,22 @@ void setup() {
   id = id | (digitalRead(DIP_SW_4_PIN) == HIGH ? 8 : 0);
   Serial.print("ID: ");
   Serial.println(id);  
+
+  char saved_power_state = EEPROM.read(POWER_STATE_ADDR);
+  if ( saved_power_state == 1 )
+  {
+    digitalWrite(PWR_PIN, HIGH);
+    power_state = true;
+  }
+  else
+  {
+    digitalWrite(PWR_PIN, LOW);
+    power_state = false;
+  }
+  Serial.print("Initial Power State: ");
+  Serial.println(power_state);
 }
 
-bool power_state = false;
 
 void handle_button_press()
 {
@@ -77,6 +97,7 @@ void handle_button_press()
   {
     digitalWrite(PWR_PIN, LOW);
   }
+  EEPROM.write(POWER_STATE_ADDR, power_state);
 }
 
 // Variables will change:
@@ -135,6 +156,7 @@ void debounce()
 #define CMD_ReadCurrent 3
 #define CMD_PressButton 4
 #define CMD_PressAndHoldButton 5
+#define CMD_GetState 6
 
 void checkSerial()
 {
@@ -146,10 +168,19 @@ void checkSerial()
   if (RS485Serial.available()) 
   {
     data = RS485Serial.read();
+    Serial.print("Read Serial Command: ");
+    Serial.println(data);
+    
     if ( data >> 4 == id )
     {
       switch( data & 0xf )
       {
+        case CMD_GetState:
+          response = 0x81;
+          res_data = power_state;
+          send_data = true;
+          break;
+          
         case CMD_PowerOff:
           if( power_state == true )
           {
@@ -214,7 +245,10 @@ void loop() {
     if ( relayDelay > 0 )
       relayDelay -= 1;
     else
+    {
+      //Serial.println("reset relay");
       digitalWrite(RELAY_PIN, LOW);
+    }
     
     if ( led_state == 0 )
     {
