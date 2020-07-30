@@ -1,3 +1,5 @@
+// Copyright 2020 New School Mining
+// Author: Ben Payne
 
 #include <SoftwareSerial.h>
 #include <EEPROM.h>
