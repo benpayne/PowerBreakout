@@ -1,6 +1,15 @@
 // Copyright 2020 New School Mining
 // Author: Ben Payne
 
+//
+// Aurdino Pro Mini 328P 3.3V 16 MHz
+//  Some IDE don't have this option show put it as 5V 16MHz instead for proper baud rates.
+// 
+
+// Version 1.0 - Initial Release of board firmware.
+// Version 1.1 - Add support for sending out to the group of a change of power state.  This allows 
+//   groups of PSUs to turn on at the same time.
+
 #include <SoftwareSerial.h>
 #include <EEPROM.h>
 
@@ -26,7 +35,7 @@
 
 // Analog pins
 #define VOLTAGE_PIN  0
-#define CURRENT_PIN  3
+#define CURRENT_PIN  3  // Current boards do not support this feature
 
 SoftwareSerial RS485Serial(RS485_RX_PIN, RS485_TX_PIN);
 
@@ -38,7 +47,24 @@ bool power_state = false;
 
 #define POWER_STATE_ADDR 0
 
-void setup() {
+// incomming commands high 4 bits are target device id
+//  lower 4 bits are commend
+// responses high bit indicates success 
+//  low bits give length of response data that follows
+#define CMD_PowerOff 1
+#define CMD_PowerOn 2
+#define CMD_ReadVoltage 3
+#define CMD_ReadCurrent 4
+#define CMD_PressButton 5
+#define CMD_PressAndHoldButton 6
+#define CMD_GetState 7
+
+#define MAJOR_SW_VER 1
+#define MINOR_SW_VER 1
+
+void setup() 
+{
+  // If this isn't working make sure you have 16MHz selected in the arduino tools menu
   Serial.begin(56700);
   // put your setup code here, to run once:
   pinMode(DIP_SW_1_PIN, INPUT);
@@ -55,12 +81,28 @@ void setup() {
   RS485Serial.begin(9600);
   //RS485Serial.listen();
   
-  led_timer = millis();
   digitalWrite(LED1_PIN, LOW);  
   digitalWrite(RELAY_PIN, LOW);
 
-  Serial.println("Firmware Version: 1.0");
-  
+  Serial.println("Firmware Version: 1.1");
+
+  digitalWrite(LED2_PIN, LOW);
+  for ( int i = 0; i < MAJOR_SW_VER; i++ )
+  {
+    digitalWrite(LED2_PIN, HIGH);
+    delay(1000);
+    digitalWrite(LED2_PIN, LOW);
+    delay(1000);
+  }
+
+  for ( int i = 0; i < MINOR_SW_VER; i++ )
+  {
+    digitalWrite(LED2_PIN, HIGH);
+    delay(200);
+    digitalWrite(LED2_PIN, LOW);
+    delay(1000);
+  }
+
   id = 0;
   id = id | (digitalRead(DIP_SW_1_PIN) == HIGH ? 1 : 0);
   id = id | (digitalRead(DIP_SW_2_PIN) == HIGH ? 2 : 0);
@@ -82,6 +124,8 @@ void setup() {
   }
   Serial.print("Initial Power State: ");
   Serial.println(power_state);
+  // prime the LED flashing timer.
+  led_timer = millis();
 }
 
 
@@ -94,11 +138,20 @@ void handle_button_press()
   if ( power_state )
   {
     digitalWrite(PWR_PIN, HIGH);
+    digitalWrite(LED1_PIN, HIGH);
+    digitalWrite(RS485_EN_PIN, RS485Transmit);
+    RS485Serial.write(id << 4 | CMD_PowerOn);
+    digitalWrite(RS485_EN_PIN, RS485Receive);
   }
   else
   {
     digitalWrite(PWR_PIN, LOW);
+    digitalWrite(LED1_PIN, LOW);
+    digitalWrite(RS485_EN_PIN, RS485Transmit);
+    RS485Serial.write(id << 4 | CMD_PowerOff);
+    digitalWrite(RS485_EN_PIN, RS485Receive);
   }
+  
   EEPROM.write(POWER_STATE_ADDR, power_state);
 }
 
@@ -147,18 +200,6 @@ void debounce()
   // it'll be the lastButtonState:
   lastButtonState = reading;
 }
-
-// incomming commands high 4 bits are target device id
-//  lower 4 bits are commend
-// responses high bit indicates success 
-//  low bits give length of response data that follows
-#define CMD_PowerOff 0
-#define CMD_PowerOn 1
-#define CMD_ReadVoltage 2
-#define CMD_ReadCurrent 3
-#define CMD_PressButton 4
-#define CMD_PressAndHoldButton 5
-#define CMD_GetState 6
 
 void checkSerial()
 {
@@ -239,10 +280,18 @@ void checkSerial()
 
 #define VOLT_THRESHOLD 11.5
 
-void loop() {
+void loop() 
+{
   if ( millis()-led_timer > 1000L )
   {
     led_timer = millis();
+
+    // update id every second.
+    id = 0;
+    id = id | (digitalRead(DIP_SW_1_PIN) == HIGH ? 1 : 0);
+    id = id | (digitalRead(DIP_SW_2_PIN) == HIGH ? 2 : 0);
+    id = id | (digitalRead(DIP_SW_3_PIN) == HIGH ? 4 : 0);
+    id = id | (digitalRead(DIP_SW_4_PIN) == HIGH ? 8 : 0);
 
     if ( relayDelay > 0 )
       relayDelay -= 1;
@@ -251,31 +300,33 @@ void loop() {
       //Serial.println("reset relay");
       digitalWrite(RELAY_PIN, LOW);
     }
-    
-    if ( led_state == 0 )
-    {
-      float volts = analogRead(VOLTAGE_PIN);
-      voltage = volts / 1023.0 * 3.3 * 4;
 
-      // LED will flash if volatge less than threshold, otherwise just keep checking every second.  
-      if ( voltage < VOLT_THRESHOLD )
+    float volts = analogRead(VOLTAGE_PIN);
+    // converts reading for A/D converter to a voltage.  The board has 4:1 voltage divider to 
+    //  take the 12V down to 3V.  The A/D converter reads 0-3.3V since were running at 3.3V.
+    voltage = volts / 1023.0 * 3.3 * 4;
+
+    if ( power_state == false or (power_state == true and voltage < VOLT_THRESHOLD) )
+    {
+      if ( led_state == 0 )
       {
         digitalWrite(LED1_PIN, HIGH);
         led_state = 1;
       }
+      else
+      {
+        digitalWrite(LED1_PIN, LOW);
+        led_state = 0;
+      }
 
       Serial.print( "Volts: " );
       Serial.println(voltage);
-  
-      //float amps = analogRead(CURRENT_PIN);
-      //amps = amps / 1023.0 * 150;
-      //Serial.print( "Amps: " );
-      //Serial.println(amps);
     }
     else
     {
-      digitalWrite(LED1_PIN, LOW);
-      led_state = 0;
+      digitalWrite(LED1_PIN, HIGH);
+      // means if we flash we'll start low
+      led_state = 1;
     }
   }
   
